@@ -1,0 +1,137 @@
+---
+- name: Deploy API Trees
+  hosts: api_game
+  gather_facts: true
+
+  vars:
+    project_dir: "{{ playbook_dir }}/.."
+
+  tasks:
+
+    # ---------------------------------------------------------
+    # Caddy configuration
+    # ---------------------------------------------------------
+
+    - name: Select macOS Caddy configuration
+      ansible.builtin.copy:
+        src: "{{ project_dir }}/caddy/Caddyfile.mac"
+        dest: "{{ project_dir }}/caddy/Caddyfile"
+        mode: "0644"
+      when: ansible_facts['os_family'] == "Darwin"
+
+    - name: Select Raspberry Pi Caddy configuration
+      ansible.builtin.copy:
+        src: "{{ project_dir }}/caddy/Caddyfile.pi"
+        dest: "{{ project_dir }}/caddy/Caddyfile"
+        mode: "0644"
+      when: ansible_facts['os_family'] == "Debian"
+
+    # ---------------------------------------------------------
+    # Podman
+    # ---------------------------------------------------------
+
+    - name: Verify Podman is available
+      ansible.builtin.command:
+        cmd: podman info
+      changed_when: false
+
+    - name: Check Podman Compose
+      ansible.builtin.command:
+        cmd: podman compose version
+      register: compose_version
+      changed_when: false
+
+    - name: Display Compose version
+      ansible.builtin.debug:
+        msg: "{{ compose_version.stdout }}"
+
+    # ---------------------------------------------------------
+    # Build
+    # ---------------------------------------------------------
+
+    - name: Build API Trees containers
+      ansible.builtin.command:
+        cmd: podman compose build
+        chdir: "{{ project_dir }}"
+      register: compose_build
+      changed_when: true
+
+    # ---------------------------------------------------------
+    # Database / Redis
+    # ---------------------------------------------------------
+
+    - name: Start PostgreSQL and Redis
+      ansible.builtin.command:
+        cmd: podman compose up -d db redis
+        chdir: "{{ project_dir }}"
+      changed_when: true
+
+    - name: Wait for PostgreSQL
+      ansible.builtin.command:
+        cmd: podman compose exec -T db pg_isready -U game -d game
+        chdir: "{{ project_dir }}"
+      register: postgres_ready
+      retries: 15
+      delay: 2
+      until: postgres_ready.rc == 0
+      changed_when: false
+
+    # ---------------------------------------------------------
+    # Database migrations
+    # ---------------------------------------------------------
+
+    - name: Run database migrations
+      ansible.builtin.command:
+        cmd: podman compose run --rm api alembic upgrade head
+        chdir: "{{ project_dir }}"
+      register: alembic_upgrade
+      changed_when: >
+        'Running upgrade' in alembic_upgrade.stdout
+        or 'Running upgrade' in alembic_upgrade.stderr
+
+    - name: Display migration status
+      ansible.builtin.debug:
+        msg: "{{ alembic_upgrade.stdout_lines }}"
+
+    # ---------------------------------------------------------
+    # Application
+    # ---------------------------------------------------------
+
+    - name: Start API Trees containers
+      ansible.builtin.command:
+        cmd: podman compose up -d
+        chdir: "{{ project_dir }}"
+      changed_when: true
+
+    # ---------------------------------------------------------
+    # Verification
+    # ---------------------------------------------------------
+
+    - name: Wait for HTTPS port
+      ansible.builtin.wait_for:
+        host: localhost
+        port: 443
+        timeout: 60
+
+    - name: Test API health endpoint
+      ansible.builtin.uri:
+        url: https://localhost/health
+        method: GET
+        validate_certs: false
+        status_code: 200
+      register: health_check
+      retries: 10
+      delay: 2
+      until: health_check.status == 200
+
+    - name: Display deployment status
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "API Trees deployment successful"
+          - "========================================"
+          - "API: https://localhost"
+          - "Health: https://localhost/health"
+          - "Docs: https://localhost/docs"
+          - "Database migrations: current"
+          - "========================================"

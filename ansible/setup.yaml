@@ -1,0 +1,124 @@
+---
+- name: Prepare API Game Host
+  hosts: api_game
+  gather_facts: true
+
+  tasks:
+
+    - name: Display detected operating system
+      ansible.builtin.debug:
+        msg:
+          - "OS Family: {{ ansible_facts['os_family'] }}"
+          - "Distribution: {{ ansible_facts['distribution'] }}"
+          - "Architecture: {{ ansible_facts['architecture'] }}"
+
+    # -------------------------
+    # macOS
+    # -------------------------
+
+    - name: Install Podman on macOS
+      community.general.homebrew:
+        name: podman
+        state: present
+      when: ansible_facts['os_family'] == "Darwin"
+
+    # -------------------------
+    # Debian / Raspberry Pi OS
+    # -------------------------
+
+    - name: Install Podman packages on Debian
+      become: true
+      ansible.builtin.apt:
+        name:
+          - podman
+          - podman-compose
+          - git
+          - curl
+          - ca-certificates
+        state: present
+        update_cache: true
+      when: ansible_facts['os_family'] == "Debian"
+
+    # -------------------------
+    # Verification
+    # -------------------------
+
+    - name: Verify Podman installation
+      ansible.builtin.command:
+        cmd: podman --version
+      register: podman_version
+      changed_when: false
+
+    - name: Display Podman version
+      ansible.builtin.debug:
+        msg: "{{ podman_version.stdout }}"
+
+    # -------------------------
+    # macOS Podman Machine
+    # -------------------------
+
+    - name: Check for existing Podman machine
+      ansible.builtin.command:
+        cmd: podman machine inspect
+      register: podman_machine
+      changed_when: false
+      failed_when: false
+      when: ansible_facts['os_family'] == "Darwin"
+
+    - name: Initialize Podman machine
+      ansible.builtin.command:
+        cmd: podman machine init
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - podman_machine.rc != 0
+      register: podman_machine_init
+
+    - name: Check Podman machine status
+      ansible.builtin.command:
+        cmd: podman machine inspect --format {{ '{{.State}}' }}
+      register: podman_machine_state
+      changed_when: false
+      when: ansible_facts['os_family'] == "Darwin"
+
+    - name: Start Podman machine
+      ansible.builtin.command:
+        cmd: podman machine start
+      when:
+        - ansible_facts['os_family'] == "Darwin"
+        - podman_machine_state.stdout != "running"
+
+    # -------------------------
+    # Podman Runtime Verification
+    # -------------------------
+
+    - name: Verify Podman runtime
+      ansible.builtin.command:
+        cmd: podman info
+      register: podman_info
+      changed_when: false
+
+    - name: Display Podman runtime status
+      ansible.builtin.debug:
+        msg: "Podman runtime is ready."
+
+    # -------------------------
+    # Allow port 443 binding while running rootless podman
+    # -------------------
+
+    - name: Allow rootless Podman to bind HTTPS port on macOS Podman machine
+      ansible.builtin.command:
+        cmd: >
+          podman machine ssh
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+      when: ansible_facts['os_family'] == "Darwin"
+      changed_when: false
+
+    - name: Allow rootless Podman to bind HTTPS port on Linux
+      become: true
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_unprivileged_port_start
+        value: "443"
+        state: present
+        sysctl_set: true
+        reload: true
+      when: ansible_facts['os_family'] == "Debian"

@@ -1,0 +1,96 @@
+services:
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: api-game-caddy
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    networks:
+      - game-network
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Containerfile
+
+    image: api-trees-api:latest
+
+    container_name: api-game-api
+    restart: unless-stopped
+
+    expose:
+      - "8000"
+
+    environment:
+      DATABASE_URL: postgresql+psycopg://game:gamepassword@db:5432/game
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_TOKEN: thats-a-my-wife
+
+    depends_on:
+      - db
+      - redis
+
+    networks:
+      - game-network
+    
+  worker:
+    image: api-trees-api:latest
+
+    container_name: api-game-worker
+    restart: unless-stopped
+
+    command:
+      - python
+      - -u
+      - -m
+      - app.worker
+
+    environment:
+      DATABASE_URL: postgresql+psycopg://game:gamepassword@db:5432/game
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_TOKEN: thats-a-my-wife
+
+    depends_on:
+      - db
+      - redis
+
+    networks:
+      - game-network
+
+  db:
+    image: docker.io/library/postgres:17-alpine
+    container_name: api-game-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: game
+      POSTGRES_USER: game
+      POSTGRES_PASSWORD: gamepassword
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - game-network
+
+  redis:
+    image: docker.io/library/redis:8-alpine
+    container_name: api-game-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - game-network
+
+networks:
+  game-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
